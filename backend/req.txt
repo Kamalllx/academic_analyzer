@@ -1,43 +1,20 @@
-# Core dependencies
-flask==2.3.3
-flask-cors==4.0.0
-pandas==2.0.3
-numpy==1.24.3
-requests==2.31.0
-
-# PDF processing
-PyPDF2==3.0.1
-
-# Database
-pymongo==4.5.0
-
-# Vector storage and embeddings
-faiss-cpu==1.7.4
-
-# Visualization
-plotly==5.17.0
-
-# Network analysis
-networkx==3.1
-
-# Text analysis
-textstat==0.7.3
-
-# CLI
-click==8.1.7
-
-# Data generation
-faker==19.6.2
-
-# Development and testing
-pytest==7.4.2
-pytest-cov==4.1.0
-black==23.9.1
-flake8==6.1.0
-
-# Optional: For production deployment
-gunicorn==21.2.0
-python-dotenv==1.0.0
-
-# Logging and monitoring
-structlog==23.1.0
+flask
+flask-cors
+pandas
+numpy
+requests
+PyPDF2
+pymongo
+faiss-cpu
+plotly
+networkx
+textstat
+click
+faker
+pytest
+pytest-cov
+black
+flake8
+gunicorn
+python-dotenv
+structlog
