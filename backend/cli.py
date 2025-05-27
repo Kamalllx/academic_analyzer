@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-CLI interface for the Intelligent Academic Document Analyzer & Learning Assistant
+Enhanced RAG PDF Assistant CLI
+Command-line interface for the enhanced RAG system with CrewAI and visualization capabilities.
 """
 
 import click
@@ -8,414 +9,830 @@ import requests
 import json
 import os
 import sys
-from datetime import datetime
-import pandas as pd
+import time
 from pathlib import Path
+from typing import Optional, Dict, Any
+import webbrowser
+from datetime import datetime
+import tempfile
 
 # Configuration
-API_BASE_URL = "http://localhost:5000"
-CONFIG_FILE = os.path.expanduser("~/.academic_analyzer_config.json")
+DEFAULT_BASE_URL = "http://localhost:5000"
+CONFIG_FILE = os.path.expanduser("~/.rag_cli_config.json")
 
-class AcademicAnalyzerCLI:
+class RAGCLIConfig:
+    """Configuration management for RAG CLI"""
+    
     def __init__(self):
-        self.config = self.load_config()
-        self.session = requests.Session()
+        self.base_url = DEFAULT_BASE_URL
+        self.load_config()
     
     def load_config(self):
-        """Load CLI configuration"""
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
-                return json.load(f)
-        return {"user_id": "cli_user", "api_url": API_BASE_URL}
+        """Load configuration from file"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+                    self.base_url = config.get('base_url', DEFAULT_BASE_URL)
+        except Exception as e:
+            click.echo(f"⚠️ Error loading config: {e}", err=True)
     
     def save_config(self):
-        """Save CLI configuration"""
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(self.config, f, indent=2)
-    
-    def api_request(self, method, endpoint, data=None, files=None):
-        """Make API request with error handling"""
-        url = f"{self.config['api_url']}{endpoint}"
+        """Save configuration to file"""
         try:
-            if method.upper() == "GET":
-                response = self.session.get(url, params=data)
-            elif method.upper() == "POST":
-                if files:
-                    response = self.session.post(url, data=data, files=files)
-                else:
-                    response = self.session.post(url, json=data)
-            
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.ConnectionError:
-            click.echo("❌ Error: Cannot connect to the server. Make sure the Flask app is running on localhost:5000")
-            sys.exit(1)
-        except requests.exceptions.HTTPError as e:
-            click.echo(f"❌ HTTP Error: {e}")
-            return {"error": str(e)}
+            config = {'base_url': self.base_url}
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
         except Exception as e:
-            click.echo(f"❌ Error: {e}")
-            return {"error": str(e)}
+            click.echo(f"⚠️ Error saving config: {e}", err=True)
 
-cli_app = AcademicAnalyzerCLI()
+# Global config instance
+config = RAGCLIConfig()
+
+def make_request(method: str, endpoint: str, **kwargs) -> requests.Response:
+    """Make HTTP request to the Flask app"""
+    url = f"{config.base_url}{endpoint}"
+    try:
+        response = requests.request(method, url, timeout=300, **kwargs)
+        return response
+    except requests.exceptions.ConnectionError:
+        click.echo(f"❌ Error: Cannot connect to RAG server at {config.base_url}")
+        click.echo("💡 Make sure the Flask app is running: python app.py")
+        sys.exit(1)
+    except requests.exceptions.Timeout:
+        click.echo("⏰ Error: Request timed out. The operation might still be processing.")
+        sys.exit(1)
+
+def print_response(response: requests.Response, success_message: str = ""):
+    """Print formatted response"""
+    try:
+        data = response.json()
+        
+        if response.status_code == 200 and data.get('success', True):
+            if success_message:
+                click.echo(f"✅ {success_message}")
+            
+            # Pretty print the response
+            if 'message' in data:
+                click.echo(f"📝 {data['message']}")
+            
+        else:
+            click.echo(f"❌ Error: {data.get('error', 'Unknown error')}")
+            
+    except json.JSONDecodeError:
+        click.echo(f"❌ Error: Invalid response from server")
+        click.echo(f"Response: {response.text[:200]}...")
+
+def print_json(data: Any, title: str = ""):
+    """Pretty print JSON data"""
+    if title:
+        click.echo(f"\n📊 {title}")
+        click.echo("=" * (len(title) + 4))
+    
+    click.echo(json.dumps(data, indent=2, default=str))
 
 @click.group()
-@click.option('--user-id', help='Set user ID for session')
-@click.option('--api-url', help='Set API base URL')
-def cli(user_id, api_url):
-    """Intelligent Academic Document Analyzer CLI"""
-    if user_id:
-        cli_app.config['user_id'] = user_id
-    if api_url:
-        cli_app.config['api_url'] = api_url
-    cli_app.save_config()
+@click.option('--base-url', default=None, help='Base URL for the RAG server')
+@click.option('--config', 'config_cmd', is_flag=True, help='Show current configuration')
+def cli(base_url: Optional[str], config_cmd: bool):
+    """Enhanced RAG PDF Assistant CLI with CrewAI and Visualization
+    
+    A comprehensive command-line interface for interacting with your enhanced
+    RAG PDF assistant that includes multi-agent processing and data visualization.
+    """
+    if base_url:
+        config.base_url = base_url
+        config.save_config()
+        click.echo(f"🔧 Base URL updated to: {base_url}")
+    
+    if config_cmd:
+        click.echo(f"🔧 Current configuration:")
+        click.echo(f"   Base URL: {config.base_url}")
+        click.echo(f"   Config file: {CONFIG_FILE}")
+        return
 
 @cli.command()
-@click.option('--file', '-f', type=click.Path(exists=True), required=True, help='PDF file to upload')
-@click.option('--subject', '-s', help='Subject/topic of the document')
-@click.option('--user-id', help='User ID (overrides config)')
-def upload_pdf(file, subject, user_id):
-    """Upload a PDF document for analysis"""
-    click.echo(f"📄 Uploading PDF: {file}")
+def health():
+    """Check server health and available features"""
+    click.echo("🔍 Checking server health...")
     
-    if not subject:
-        subject = click.prompt('Enter the subject/topic for this document')
+    response = make_request('GET', '/health')
     
-    current_user_id = user_id or cli_app.config['user_id']
-    
-    with open(file, 'rb') as f:
-        files = {'file': f}
-        data = {
-            'subject': subject,
-            'user_id': current_user_id
-        }
+    if response.status_code == 200:
+        data = response.json()
+        click.echo("✅ Server is healthy!")
+        click.echo(f"📅 Timestamp: {data.get('timestamp', 'Unknown')}")
+        click.echo(f"🔢 Version: {data.get('version', 'Unknown')}")
         
-        result = cli_app.api_request('POST', '/upload_pdf', data=data, files=files)
-    
-    if 'error' in result:
-        click.echo(f"❌ Upload failed: {result['error']}")
+        features = data.get('features', [])
+        if features:
+            click.echo("🚀 Available features:")
+            for feature in features:
+                click.echo(f"   • {feature}")
+        
+        agents = data.get('agents_available', [])
+        if agents:
+            click.echo("🤖 Available agents:")
+            for agent in agents:
+                click.echo(f"   • {agent}")
+        
+        viz_types = data.get('visualization_types', [])
+        if viz_types:
+            click.echo("📊 Visualization types:")
+            for viz_type in viz_types:
+                click.echo(f"   • {viz_type}")
     else:
-        click.echo("✅ PDF uploaded successfully!")
-        click.echo(f"   Document ID: {result.get('document_id')}")
-        click.echo(f"   Chunks created: {result.get('chunks')}")
-        click.echo(f"   Complexity score: {result.get('complexity_score'):.3f}")
+        print_response(response)
 
 @cli.command()
-@click.option('--question', '-q', help='Question to ask')
-@click.option('--document-id', '-d', help='Specific document ID (default: search all)')
-@click.option('--user-id', help='User ID (overrides config)')
-@click.option('--interactive', '-i', is_flag=True, help='Start interactive Q&A session')
-def ask(question, document_id, user_id, interactive):
-    """Ask questions about uploaded documents"""
-    current_user_id = user_id or cli_app.config['user_id']
-    doc_id = document_id or 'all'
+def list():
+    """List all processed documents"""
+    click.echo("📚 Retrieving document list...")
     
-    if interactive:
-        click.echo("🤖 Starting interactive Q&A session. Type 'quit' to exit.")
-        while True:
-            question = click.prompt('\n📝 Your question')
-            if question.lower() in ['quit', 'exit', 'q']:
-                break
+    response = make_request('GET', '/documents')
+    
+    if response.status_code == 200:
+        data = response.json()
+        documents = data.get('documents', [])
+        
+        if not documents:
+            click.echo("📭 No documents found. Process some PDFs first!")
+            return
+        
+        click.echo(f"📋 Found {len(documents)} document(s):")
+        click.echo()
+        
+        for i, doc in enumerate(documents, 1):
+            click.echo(f"{i}. 📄 {doc.get('filename', 'Unknown')}")
+            click.echo(f"   📅 Uploaded: {doc.get('upload_date', 'Unknown')}")
+            click.echo(f"   📊 Pages: {doc.get('total_pages', 'Unknown')}")
+            click.echo(f"   🔢 Version: {doc.get('processing_version', 'Unknown')}")
             
-            _process_question(question, doc_id, current_user_id)
+            # Enhanced metadata
+            data_summary = doc.get('data_summary', {})
+            if data_summary:
+                click.echo(f"   📈 Numerical items: {data_summary.get('numerical_items', 0)}")
+                click.echo(f"   📊 Has data: {'Yes' if data_summary.get('has_numerical_data') else 'No'}")
+            
+            toc = doc.get('table_of_contents', {})
+            if toc:
+                click.echo(f"   🏷️ Topics: {len(toc)} ({', '.join(list(toc.keys())[:3])}{'...' if len(toc) > 3 else ''})")
+            click.echo()
     else:
-        if not question:
-            question = click.prompt('📝 Enter your question')
-        
-        _process_question(question, doc_id, current_user_id)
+        print_response(response)
 
-def _process_question(question, doc_id, user_id):
-    """Process a single question"""
-    data = {
-        'question': question,
-        'document_id': doc_id,
-        'user_id': user_id
+@cli.command()
+@click.argument('filepath', type=click.Path(exists=True, path_type=Path))
+@click.option('--enhanced', '-e', is_flag=True, default=True, help='Use enhanced processing with data analysis')
+def process(filepath: Path, enhanced: bool):
+    """Process a PDF document
+    
+    FILEPATH: Path to the PDF file to process
+    """
+    if not filepath.suffix.lower() == '.pdf':
+        click.echo("❌ Error: Only PDF files are supported")
+        return
+    
+    processing_type = "enhanced" if enhanced else "standard"
+    click.echo(f"📤 Uploading and processing: {filepath.name} ({processing_type})")
+    
+    # Show progress
+    with click.progressbar(length=100, label='Processing') as bar:
+        try:
+            with open(filepath, 'rb') as f:
+                files = {'file': (filepath.name, f, 'application/pdf')}
+                
+                # Simulate progress during upload
+                bar.update(20)
+                
+                response = make_request('POST', '/process', files=files)
+                
+                # Simulate processing progress
+                for i in range(20, 100, 10):
+                    time.sleep(0.5)
+                    bar.update(10)
+                
+                bar.update(100)
+        
+        except Exception as e:
+            click.echo(f"\n❌ Error uploading file: {e}")
+            return
+    
+    if response.status_code == 200:
+        data = response.json()
+        details = data.get('processing_details', {})
+        
+        click.echo("\n✅ Document processed successfully!")
+        click.echo(f"📄 Filename: {data.get('filename')}")
+        click.echo(f"📊 Pages processed: {details.get('pages_processed', 'Unknown')}")
+        click.echo(f"🏷️ Topics extracted: {details.get('topics_extracted', 'Unknown')}")
+        
+        if enhanced and details.get('structured_data_extracted'):
+            click.echo(f"📈 Numerical items found: {details.get('numerical_items', 0)}")
+            click.echo("🎯 Document is ready for advanced analysis and visualization!")
+        
+    else:
+        print_response(response)
+
+@cli.command()
+@click.option('--filename', '-f', required=True, help='Document filename to query')
+@click.option('--question', '-q', prompt='Question', help='Question to ask about the document')
+@click.option('--agentic', '-a', is_flag=True, help='Use CrewAI multi-agent processing')
+@click.option('--visualize', '-v', is_flag=True, help='Include data visualization')
+@click.option('--save', '-s', help='Save answer to file')
+def ask(filename: str, question: str, agentic: bool, visualize: bool, save: Optional[str]):
+    """Ask a question about a processed document
+    
+    Choose between traditional RAG or enhanced CrewAI multi-agent processing.
+    """
+    processing_mode = "🤖 CrewAI multi-agent" if agentic else "📚 Traditional RAG"
+    click.echo(f"❓ Processing question with {processing_mode}...")
+    click.echo(f"📄 Document: {filename}")
+    click.echo(f"❓ Question: {question}")
+    
+    if visualize and not agentic:
+        click.echo("⚠️ Visualization requires agentic mode. Enabling agentic processing...")
+        agentic = True
+    
+    # Choose endpoint based on processing mode
+    endpoint = '/ask/agentic' if agentic else '/ask'
+    
+    payload = {
+        'filename': filename,
+        'question': question
     }
     
-    click.echo("🔍 Searching for answer...")
-    result = cli_app.api_request('POST', '/ask', data=data)
+    if agentic:
+        payload['visualize'] = visualize
     
-    if 'error' in result:
-        click.echo(f"❌ Error: {result['error']}")
-    else:
-        click.echo("\n💡 Answer:")
-        click.echo(f"   {result.get('answer', 'No answer available')}")
+    with click.progressbar(length=100, label='Processing') as bar:
+        response = make_request('POST', endpoint, json=payload)
         
-        if result.get('tutor_explanation'):
-            click.echo("\n🎓 Tutor Explanation:")
-            click.echo(f"   {result['tutor_explanation']}")
+        # Simulate processing time
+        for i in range(0, 100, 20):
+            time.sleep(1)
+            bar.update(20)
+    
+    if response.status_code == 200:
+        data = response.json()
         
-        sources = result.get('sources', [])
-        if sources:
-            click.echo("\n📚 Sources:")
-            for i, source in enumerate(sources[:3], 1):
-                click.echo(f"   {i}. {source.get('document', 'Unknown')} (relevance: {source.get('relevance_score', 0):.2f})")
-
-@cli.command()
-@click.option('--user-id', help='User ID to analyze (overrides config)')
-@click.option('--time-range', default='30days', help='Time range for analysis (e.g., 30days, 12weeks)')
-@click.option('--output', '-o', help='Output file path for saving results')
-def analyze_progress(user_id, time_range, output):
-    """Analyze learning progress and patterns"""
-    current_user_id = user_id or cli_app.config['user_id']
-    
-    click.echo(f"📊 Analyzing learning progress for user: {current_user_id}")
-    
-    result = cli_app.api_request('GET', f'/analytics/progress/{current_user_id}', 
-                                data={'time_range': time_range})
-    
-    if 'error' in result:
-        click.echo(f"❌ Analysis failed: {result['error']}")
-        return
-    
-    # Display results
-    click.echo("\n📈 Learning Progress Summary:")
-    click.echo(f"   Total questions asked: {result.get('total_questions', 0)}")
-    click.echo(f"   Documents accessed: {result.get('unique_documents', 0)}")
-    click.echo(f"   Average questions/day: {result.get('avg_questions_per_day', 0)}")
-    click.echo(f"   Learning sessions: {result.get('learning_sessions', 0)}")
-    click.echo(f"   Comprehension score: {result.get('comprehension_score', 0):.2f}")
-    
-    # Display main topics
-    topics = result.get('main_topics', [])
-    if topics:
-        click.echo(f"\n🎯 Main topics studied: {', '.join(topics[:5])}")
-    
-    # Display trends
-    complexity_trend = result.get('complexity_trend', 'unknown')
-    if complexity_trend == 'increasing':
-        click.echo("📈 Question complexity is increasing - great progress!")
-    elif complexity_trend == 'stable':
-        click.echo("📊 Question complexity is stable")
-    
-    if output:
-        with open(output, 'w') as f:
-            json.dump(result, f, indent=2)
-        click.echo(f"💾 Results saved to: {output}")
-
-@cli.command()
-@click.option('--limit', default=100, help='Number of recent interactions to analyze')
-@click.option('--output', '-o', help='Output file path')
-def analyze_patterns(limit, output):
-    """Analyze query patterns across all users"""
-    click.echo("🔍 Analyzing query patterns...")
-    
-    result = cli_app.api_request('GET', '/analytics/patterns', 
-                                data={'limit': limit})
-    
-    if 'error' in result:
-        click.echo(f"❌ Analysis failed: {result['error']}")
-        return
-    
-    click.echo("\n📊 Query Pattern Analysis:")
-    
-    # Question types
-    question_types = result.get('question_types', {})
-    if question_types:
-        click.echo("\n❓ Question Types:")
-        for q_type, count in question_types.items():
-            click.echo(f"   {q_type}: {count}")
-    
-    # Popular topics
-    topics = result.get('popular_topics', {})
-    if topics:
-        click.echo("\n🎯 Popular Topics:")
-        for topic, count in list(topics.items())[:5]:
-            click.echo(f"   {topic}: {count}")
-    
-    # Activity by hour
-    hourly = result.get('hourly_activity', {})
-    if hourly:
-        peak_hour = max(hourly, key=hourly.get)
-        click.echo(f"\n🕐 Peak activity hour: {peak_hour}:00 ({hourly[peak_hour]} questions)")
-    
-    if output:
-        with open(output, 'w') as f:
-            json.dump(result, f, indent=2)
-        click.echo(f"💾 Results saved to: {output}")
-
-@cli.command()
-@click.option('--user-id', help='User ID (overrides config)')
-@click.option('--output-dir', default='./dashboard', help='Output directory for dashboard files')
-def generate_dashboard(user_id, output_dir):
-    """Generate visualization dashboard"""
-    current_user_id = user_id or cli_app.config['user_id']
-    
-    click.echo(f"📊 Generating dashboard for user: {current_user_id}")
-    
-    result = cli_app.api_request('GET', f'/visualizations/dashboard/{current_user_id}')
-    
-    if 'error' in result:
-        click.echo(f"❌ Dashboard generation failed: {result['error']}")
-        return
-    
-    # Create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Save dashboard data
-    dashboard_file = f"{output_dir}/dashboard_{current_user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(dashboard_file, 'w') as f:
-        json.dump(result, f, indent=2)
-    
-    click.echo(f"✅ Dashboard generated successfully!")
-    click.echo(f"💾 Saved to: {dashboard_file}")
-    
-    # Display summary
-    summary = result.get('summary_stats', {})
-    if summary:
-        click.echo("\n📈 Summary Statistics:")
-        for key, value in summary.items():
-            click.echo(f"   {key.replace('_', ' ').title()}: {value}")
-
-@cli.command()
-@click.option('--message', '-m', help='Message to send to tutor')
-@click.option('--user-id', help='User ID (overrides config)')
-def chat_tutor(message, user_id):
-    """Chat with the AI tutor"""
-    current_user_id = user_id or cli_app.config['user_id']
-    
-    if not message:
-        click.echo("🎓 Starting chat with AI tutor. Type 'quit' to exit.")
-        while True:
-            message = click.prompt('\n💬 You')
-            if message.lower() in ['quit', 'exit', 'q']:
-                break
+        click.echo("\n" + "="*80)
+        click.echo("📝 ANSWER")
+        click.echo("="*80)
+        
+        if agentic:
+            # Handle agentic response
+            agentic_result = data.get('agentic_result', {})
             
-            _chat_with_tutor(message, current_user_id)
+            if 'crew_result' in agentic_result:
+                click.echo(agentic_result['crew_result'])
+            
+            click.echo(f"\n🤖 Processing details:")
+            click.echo(f"   • Tasks completed: {agentic_result.get('tasks_completed', 'Unknown')}")
+            click.echo(f"   • Agents involved: {', '.join(agentic_result.get('agents_involved', []))}")
+            
+            # Handle visualization results
+            if visualize and agentic_result.get('visualization'):
+                viz_data = agentic_result['visualization']
+                if 'visualizations' in viz_data:
+                    click.echo(f"\n📊 Generated {len(viz_data['visualizations'])} visualization(s):")
+                    for viz in viz_data['visualizations']:
+                        click.echo(f"   • {viz.get('title', 'Unknown')}: {viz.get('path', 'No path')}")
+        else:
+            # Handle traditional response
+            click.echo(data.get('answer', 'No answer provided'))
+            
+            references = data.get('references', [])
+            if references:
+                click.echo(f"\n📚 References: {', '.join(references)}")
+        
+        # Save answer if requested
+        if save:
+            try:
+                answer_content = data.get('answer', str(data.get('agentic_result', {})))
+                with open(save, 'w', encoding='utf-8') as f:
+                    f.write(f"Question: {question}\n")
+                    f.write(f"Document: {filename}\n")
+                    f.write(f"Processing Mode: {processing_mode}\n")
+                    f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                    f.write("\n" + "="*50 + "\n\n")
+                    f.write(answer_content)
+                
+                click.echo(f"\n💾 Answer saved to: {save}")
+            except Exception as e:
+                click.echo(f"\n⚠️ Error saving answer: {e}")
+    
     else:
-        _chat_with_tutor(message, current_user_id)
+        print_response(response)
 
-def _chat_with_tutor(message, user_id):
-    """Send message to tutor"""
-    data = {
-        'question': message,
-        'context': ''
+@cli.command()
+@click.option('--filename', '-f', required=True, help='Document filename')
+@click.option('--type', '-t', 'viz_type', default='auto', 
+              type=click.Choice(['auto', 'bar', 'line', 'scatter', 'heatmap', 'summary']),
+              help='Type of visualization to create')
+@click.option('--query', '-q', default='', help='Query to focus visualization')
+@click.option('--open', '-o', 'open_viz', is_flag=True, help='Open visualization in browser')
+@click.option('--save-to', '-s', help='Save visualization info to file')
+def visualize(filename: str, viz_type: str, query: str, open_viz: bool, save_to: Optional[str]):
+    """Create data visualizations from document content"""
+    click.echo(f"📊 Creating {viz_type} visualization for: {filename}")
+    
+    if query:
+        click.echo(f"🔍 Query focus: {query}")
+    
+    payload = {
+        'filename': filename,
+        'type': viz_type,
+        'query': query
     }
     
-    result = cli_app.api_request('POST', '/agents/tutor', data=data)
+    with click.progressbar(length=100, label='Generating visualization') as bar:
+        response = make_request('POST', '/visualize', json=payload)
+        
+        for i in range(0, 100, 25):
+            time.sleep(0.5)
+            bar.update(25)
     
-    if 'error' in result:
-        click.echo(f"❌ Error: {result['error']}")
+    if response.status_code == 200:
+        data = response.json()
+        viz_data = data.get('visualization', {})
+        
+        if 'error' in viz_data:
+            click.echo(f"\n❌ Visualization error: {viz_data['error']}")
+            return
+        
+        visualizations = viz_data.get('visualizations', [])
+        
+        if visualizations:
+            click.echo(f"\n✅ Generated {len(visualizations)} visualization(s):")
+            
+            viz_info = []
+            for i, viz in enumerate(visualizations, 1):
+                click.echo(f"\n{i}. 📈 {viz.get('title', 'Untitled')}")
+                click.echo(f"   Type: {viz.get('type', 'unknown')}")
+                click.echo(f"   Description: {viz.get('description', 'No description')}")
+                click.echo(f"   File: {viz.get('path', 'No path')}")
+                
+                viz_info.append({
+                    'title': viz.get('title'),
+                    'type': viz.get('type'),
+                    'description': viz.get('description'),
+                    'path': viz.get('path')
+                })
+                
+                # Open in browser if requested
+                if open_viz and viz.get('path'):
+                    viz_url = f"{config.base_url}/visualizations/{os.path.basename(viz['path'])}"
+                    try:
+                        webbrowser.open(viz_url)
+                        click.echo(f"   🌐 Opened in browser: {viz_url}")
+                    except Exception as e:
+                        click.echo(f"   ⚠️ Could not open in browser: {e}")
+            
+            # Show data summary
+            data_summary = viz_data.get('data_summary', {})
+            if data_summary:
+                click.echo(f"\n📊 Data Summary:")
+                click.echo(f"   • Numbers found: {data_summary.get('total_numbers', 0)}")
+                click.echo(f"   • Years found: {data_summary.get('total_years', 0)}")
+                click.echo(f"   • Categories found: {data_summary.get('total_categories', 0)}")
+            
+            # Save visualization info if requested
+            if save_to:
+                try:
+                    save_data = {
+                        'filename': filename,
+                        'visualization_type': viz_type,
+                        'query': query,
+                        'timestamp': datetime.now().isoformat(),
+                        'visualizations': viz_info,
+                        'data_summary': data_summary
+                    }
+                    
+                    with open(save_to, 'w', encoding='utf-8') as f:
+                        json.dump(save_data, f, indent=2)
+                    
+                    click.echo(f"\n💾 Visualization info saved to: {save_to}")
+                except Exception as e:
+                    click.echo(f"\n⚠️ Error saving visualization info: {e}")
+        else:
+            click.echo("\n🤷 No visualizations could be generated from the document data.")
+            click.echo("💡 Try processing documents with more quantitative content.")
+    
     else:
-        click.echo(f"\n🎓 Tutor: {result.get('response', 'No response available')}")
+        print_response(response)
 
 @cli.command()
-@click.option('--topic', '-t', help='Research topic')
-def research_assistant(topic):
-    """Get research suggestions from AI assistant"""
-    if not topic:
-        topic = click.prompt('🔬 Enter research topic')
+@click.option('--filename', '-f', required=True, help='Document filename')
+@click.option('--type', '-t', 'data_type', default='tables',
+              type=click.Choice(['tables', 'numbers', 'dates', 'entities']),
+              help='Type of data to extract')
+@click.option('--output', '-o', help='Output file for extracted data (JSON format)')
+@click.option('--format', '-fmt', 'output_format', default='json',
+              type=click.Choice(['json', 'csv', 'txt']),
+              help='Output format')
+def extract(filename: str, data_type: str, output: Optional[str], output_format: str):
+    """Extract structured data from document"""
+    click.echo(f"📈 Extracting {data_type} data from: {filename}")
     
-    click.echo(f"🔍 Researching topic: {topic}")
+    payload = {
+        'filename': filename,
+        'data_type': data_type
+    }
     
-    data = {'topic': topic}
-    result = cli_app.api_request('POST', '/agents/researcher', data=data)
+    response = make_request('POST', '/extract-data', json=payload)
     
-    if 'error' in result:
-        click.echo(f"❌ Error: {result['error']}")
+    if response.status_code == 200:
+        data = response.json()
+        extracted_data = data.get('extracted_data', {})
+        
+        if 'error' in extracted_data:
+            click.echo(f"❌ Extraction error: {extracted_data['error']}")
+            return
+        
+        # Display summary
+        click.echo("✅ Data extraction completed!")
+        click.echo(f"📊 Extraction method: {extracted_data.get('extraction_method', 'unknown')}")
+        click.echo(f"📈 Total items found: {extracted_data.get('total_found', 0)}")
+        
+        # Show sample data
+        data_key = {
+            'tables': 'tables',
+            'numbers': 'numerical_data', 
+            'dates': 'dates',
+            'entities': 'entities'
+        }.get(data_type, data_type)
+        
+        items = extracted_data.get(data_key, [])
+        
+        if items:
+            click.echo(f"\n📋 Sample {data_type} (showing first 5):")
+            for i, item in enumerate(items[:5], 1):
+                if isinstance(item, dict):
+                    if data_type == 'entities':
+                        click.echo(f"{i}. {item.get('entity', 'Unknown')} (Page {item.get('page', '?')}, Freq: {item.get('frequency', 0)})")
+                    elif data_type == 'numbers':
+                        click.echo(f"{i}. {item.get('value', 'Unknown')} {item.get('unit', '')} (Page {item.get('page', '?')})")
+                    elif data_type == 'dates':
+                        click.echo(f"{i}. {item.get('date', 'Unknown')} (Page {item.get('page', '?')})")
+                    else:
+                        click.echo(f"{i}. {item}")
+                else:
+                    click.echo(f"{i}. {item}")
+        
+        # Save to file if requested
+        if output:
+            try:
+                if output_format == 'json':
+                    with open(output, 'w', encoding='utf-8') as f:
+                        json.dump(extracted_data, f, indent=2, default=str)
+                
+                elif output_format == 'csv' and items:
+                    import pandas as pd
+                    df = pd.DataFrame(items)
+                    df.to_csv(output, index=False)
+                
+                elif output_format == 'txt':
+                    with open(output, 'w', encoding='utf-8') as f:
+                        f.write(f"Data Type: {data_type}\n")
+                        f.write(f"Document: {filename}\n")
+                        f.write(f"Extraction Date: {datetime.now().isoformat()}\n")
+                        f.write(f"Total Items: {extracted_data.get('total_found', 0)}\n\n")
+                        
+                        for i, item in enumerate(items, 1):
+                            f.write(f"{i}. {item}\n")
+                
+                click.echo(f"\n💾 Data saved to: {output}")
+            except Exception as e:
+                click.echo(f"\n⚠️ Error saving data: {e}")
+        
     else:
-        suggestions = result.get('suggestions', 'No suggestions available')
-        click.echo(f"\n📚 Research Suggestions:\n{suggestions}")
+        print_response(response)
 
 @cli.command()
-@click.option('--user-id', help='User ID (overrides config)')
-@click.option('--format', default='json', type=click.Choice(['json', 'csv']), help='Export format')
-@click.option('--output', '-o', help='Output file path')
-def export_data(user_id, format, output):
-    """Export user data"""
-    current_user_id = user_id or cli_app.config['user_id']
+@click.option('--filename', '-f', required=True, help='Document filename')
+@click.option('--type', '-t', 'analysis_type', default='comprehensive',
+              type=click.Choice(['comprehensive', 'statistical', 'temporal']),
+              help='Type of analysis to perform')
+@click.option('--output', '-o', help='Output file for analysis results')
+def analyze(filename: str, analysis_type: str, output: Optional[str]):
+    """Perform comprehensive document analysis using magnetic approach"""
+    click.echo(f"🔬 Performing {analysis_type} analysis for: {filename}")
+    click.echo("🧲 Using magnetic approach for data clustering...")
     
-    click.echo(f"📤 Exporting data for user: {current_user_id}")
+    payload = {
+        'filename': filename,
+        'analysis_type': analysis_type
+    }
     
-    # Get user interactions
-    result = cli_app.api_request('GET', f'/analytics/progress/{current_user_id}', 
-                                data={'time_range': '365days'})
+    with click.progressbar(length=100, label='Analyzing') as bar:
+        response = make_request('POST', '/analyze', json=payload)
+        
+        for i in range(0, 100, 20):
+            time.sleep(0.8)
+            bar.update(20)
     
-    if 'error' in result:
-        click.echo(f"❌ Export failed: {result['error']}")
-        return
+    if response.status_code == 200:
+        data = response.json()
+        analysis_result = data.get('analysis_result', {})
+        
+        if 'error' in analysis_result:
+            click.echo(f"\n❌ Analysis error: {analysis_result['error']}")
+            return
+        
+        click.echo("\n✅ Analysis completed!")
+        click.echo(f"📊 Analysis type: {analysis_result.get('analysis_type', 'unknown')}")
+        
+        # Display results based on analysis type
+        if analysis_type == 'comprehensive':
+            click.echo("\n🔍 Comprehensive Analysis Results:")
+            
+            insights = analysis_result.get('insights', {})
+            if insights:
+                click.echo(f"   • Total concepts: {insights.get('total_concepts', 0)}")
+                click.echo(f"   • Data richness score: {insights.get('data_richness_score', 0):.2f}")
+                click.echo(f"   • Content diversity: {insights.get('content_diversity', 0):.2f}")
+            
+            concept_clusters = analysis_result.get('concept_clusters', {})
+            if concept_clusters:
+                click.echo(f"\n🏷️ Top concept clusters:")
+                for i, (concept, data) in enumerate(list(concept_clusters.items())[:5], 1):
+                    click.echo(f"   {i}. {concept.title()}: {data.get('frequency', 0)} occurrences")
+        
+        elif analysis_type == 'statistical':
+            click.echo("\n📊 Statistical Analysis Results:")
+            
+            results = analysis_result.get('results', {})
+            desc_stats = results.get('descriptive_stats', {})
+            if desc_stats:
+                click.echo(f"   • Count: {desc_stats.get('count', 0)}")
+                click.echo(f"   • Mean: {desc_stats.get('mean', 0):.2f}")
+                click.echo(f"   • Median: {desc_stats.get('median', 0):.2f}")
+                click.echo(f"   • Std Dev: {desc_stats.get('std', 0):.2f}")
+            
+            data_quality = analysis_result.get('data_quality', {})
+            if data_quality:
+                click.echo(f"\n🎯 Data Quality:")
+                click.echo(f"   • Analysis confidence: {data_quality.get('analysis_confidence', 'unknown')}")
+        
+        elif analysis_type == 'temporal':
+            click.echo("\n📅 Temporal Analysis Results:")
+            
+            temporal_stats = analysis_result.get('temporal_statistics', {})
+            if temporal_stats:
+                time_span = temporal_stats.get('time_span', {})
+                click.echo(f"   • Time span: {time_span.get('start', '?')} - {time_span.get('end', '?')}")
+                click.echo(f"   • Duration: {time_span.get('duration', 0)} years")
+                click.echo(f"   • Total years mentioned: {temporal_stats.get('total_years', 0)}")
+        
+        # Save results if requested
+        if output:
+            try:
+                with open(output, 'w', encoding='utf-8') as f:
+                    json.dump(analysis_result, f, indent=2, default=str)
+                click.echo(f"\n💾 Analysis results saved to: {output}")
+            except Exception as e:
+                click.echo(f"\n⚠️ Error saving results: {e}")
     
-    if not output:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output = f"user_data_{current_user_id}_{timestamp}.{format}"
+    else:
+        print_response(response)
+
+@cli.command()
+@click.option('--filename', '-f', required=True, help='Document filename')
+@click.option('--open', '-o', 'open_screenshots', is_flag=True, help='Open screenshots directory')
+def screenshots(filename: str, open_screenshots: bool):
+    """View available screenshots for a document"""
+    click.echo(f"📸 Retrieving screenshots for: {filename}")
     
-    if format == 'json':
-        with open(output, 'w') as f:
-            json.dump(result, f, indent=2)
-    elif format == 'csv':
-        # Convert to DataFrame and save as CSV
-        df = pd.DataFrame([result])  # Simplified for summary data
-        df.to_csv(output, index=False)
+    response = make_request('GET', f'/document/{filename}/screenshots')
     
-    click.echo(f"✅ Data exported to: {output}")
+    if response.status_code == 200:
+        data = response.json()
+        screenshots_list = data.get('screenshots', [])
+        
+        if screenshots_list:
+            click.echo(f"✅ Found {len(screenshots_list)} screenshot(s):")
+            
+            for screenshot in screenshots_list:
+                page_num = screenshot.get('page_number')
+                filename_ss = screenshot.get('filename')
+                click.echo(f"   📄 Page {page_num}: {filename_ss}")
+            
+            if open_screenshots:
+                # Open screenshots directory URL
+                screenshots_url = f"{config.base_url}/context/"
+                click.echo(f"\n🌐 Screenshots available at: {screenshots_url}")
+                try:
+                    webbrowser.open(screenshots_url)
+                    click.echo("🌐 Opened screenshots in browser")
+                except Exception as e:
+                    click.echo(f"⚠️ Could not open browser: {e}")
+        else:
+            click.echo("📭 No screenshots available for this document.")
+    
+    else:
+        print_response(response)
+
+@cli.command()
+@click.option('--url', prompt='Server URL', default=DEFAULT_BASE_URL, 
+              help='Base URL for the RAG server')
+def configure(url: str):
+    """Configure CLI settings"""
+    config.base_url = url.rstrip('/')
+    config.save_config()
+    
+    click.echo(f"✅ Configuration updated!")
+    click.echo(f"🔧 Base URL: {config.base_url}")
+    click.echo(f"📁 Config file: {CONFIG_FILE}")
+    
+    # Test connection
+    try:
+        response = make_request('GET', '/health')
+        if response.status_code == 200:
+            click.echo("✅ Connection test successful!")
+        else:
+            click.echo("⚠️ Connection test failed. Check if the server is running.")
+    except:
+        click.echo("⚠️ Cannot connect to server. Make sure it's running.")
 
 @cli.command()
 def status():
-    """Check system status and configuration"""
-    click.echo("🔧 System Status:")
-    click.echo(f"   API URL: {cli_app.config['api_url']}")
-    click.echo(f"   User ID: {cli_app.config['user_id']}")
-    click.echo(f"   Config file: {CONFIG_FILE}")
+    """Show detailed system status and statistics"""
+    click.echo("📊 Retrieving system status...")
     
-    # Test API connection
-    try:
-        result = cli_app.api_request('GET', '/')
-        if result:
-            click.echo("✅ API connection: OK")
-            click.echo(f"   Server version: {result.get('version', 'Unknown')}")
-        else:
-            click.echo("❌ API connection: Failed")
-    except:
-        click.echo("❌ API connection: Failed")
+    # Get health info
+    health_response = make_request('GET', '/health')
+    
+    if health_response.status_code != 200:
+        click.echo("❌ Cannot retrieve system status")
+        return
+    
+    health_data = health_response.json()
+    
+    # Get documents info
+    docs_response = make_request('GET', '/documents')
+    docs_data = docs_response.json() if docs_response.status_code == 200 else {}
+    documents = docs_data.get('documents', [])
+    
+    click.echo("\n🎯 SYSTEM STATUS")
+    click.echo("=" * 50)
+    
+    # Server info
+    click.echo(f"🔧 Server: {config.base_url}")
+    click.echo(f"📅 Server time: {health_data.get('timestamp', 'Unknown')}")
+    click.echo(f"🔢 Version: {health_data.get('version', 'Unknown')}")
+    
+    # Features
+    features = health_data.get('features', [])
+    click.echo(f"🚀 Features: {', '.join(features)}")
+    
+    # Documents statistics
+    click.echo(f"\n📚 Documents: {len(documents)}")
+    
+    if documents:
+        enhanced_docs = sum(1 for doc in documents if doc.get('processing_version', '').startswith('2.0'))
+        total_pages = sum(doc.get('total_pages', 0) for doc in documents)
+        docs_with_data = sum(1 for doc in documents if doc.get('data_summary', {}).get('has_numerical_data'))
+        
+        click.echo(f"   • Enhanced processing: {enhanced_docs}/{len(documents)}")
+        click.echo(f"   • Total pages: {total_pages}")
+        click.echo(f"   • Documents with data: {docs_with_data}")
+    
+    # Agents info
+    agents = health_data.get('agents_available', [])
+    if agents:
+        click.echo(f"\n🤖 Available agents: {len(agents)}")
+        for agent in agents:
+            click.echo(f"   • {agent}")
+    
+    # Visualization types
+    viz_types = health_data.get('visualization_types', [])
+    if viz_types:
+        click.echo(f"\n📊 Visualization types: {', '.join(viz_types)}")
 
 @cli.command()
-@click.option('--output-dir', default='./sample_data', help='Directory to generate sample data')
-def generate_sample_data(output_dir):
-    """Generate sample datasets for testing"""
-    click.echo("📊 Generating sample datasets...")
+@click.option('--filename', '-f', help='Filter by document filename')
+@click.option('--count', '-c', default=10, help='Number of recent operations to show')
+def recent(filename: Optional[str], count: int):
+    """Show recent operations and activity"""
+    click.echo(f"📋 Showing recent activity (last {count} operations)...")
     
-    try:
-        from data.csv_generator import CSVDatasetGenerator
-        
-        generator = CSVDatasetGenerator()
-        files = generator.generate_all_datasets(output_dir)
-        
-        click.echo("✅ Sample datasets generated successfully!")
-        for dataset_type, file_path in files.items():
-            click.echo(f"   {dataset_type}: {file_path}")
+    if filename:
+        click.echo(f"🔍 Filtered by document: {filename}")
     
-    except ImportError:
-        click.echo("❌ Error: CSV generator module not found")
-    except Exception as e:
-        click.echo(f"❌ Error generating sample data: {e}")
+    # This would require implementing activity logging in the backend
+    # For now, show a placeholder message
+    click.echo("\n⚠️ Activity logging not yet implemented in backend.")
+    click.echo("💡 This feature requires additional backend implementation.")
 
 @cli.command()
-@click.option('--interaction-id', help='Interaction ID to rate')
-@click.option('--rating', type=click.IntRange(1, 5), help='Rating (1-5 stars)')
-@click.option('--comments', help='Additional comments')
-def feedback(interaction_id, rating, comments):
-    """Provide feedback on answers"""
-    if not interaction_id:
-        interaction_id = click.prompt('Enter interaction ID')
+def interactive():
+    """Start interactive mode for exploratory analysis"""
+    click.echo("🚀 Starting interactive mode...")
+    click.echo("💡 Type 'help' for available commands, 'exit' to quit")
     
-    if not rating:
-        rating = click.prompt('Rate the answer (1-5 stars)', type=click.IntRange(1, 5))
-    
-    if not comments:
-        comments = click.prompt('Comments (optional)', default='', show_default=False)
-    
-    data = {
-        'interaction_id': interaction_id,
-        'rating': rating,
-        'comments': comments
-    }
-    
-    result = cli_app.api_request('POST', '/feedback', data=data)
-    
-    if 'error' in result:
-        click.echo(f"❌ Error submitting feedback: {result['error']}")
-    else:
-        click.echo("✅ Feedback submitted successfully!")
+    while True:
+        try:
+            command = input("\n📚 RAG> ").strip()
+            
+            if command.lower() in ['exit', 'quit', 'q']:
+                click.echo("👋 Goodbye!")
+                break
+            
+            elif command.lower() in ['help', 'h']:
+                click.echo("\n📖 Interactive Commands:")
+                click.echo("  list - List documents")
+                click.echo("  ask <filename> - Ask a question about a document")
+                click.echo("  viz <filename> - Create visualization")
+                click.echo("  analyze <filename> - Perform analysis")
+                click.echo("  health - Check system health")
+                click.echo("  exit - Exit interactive mode")
+            
+            elif command.lower() == 'list':
+                # Call the list command
+                from click.testing import CliRunner
+                runner = CliRunner()
+                result = runner.invoke(list)
+                click.echo(result.output)
+            
+            elif command.lower() == 'health':
+                from click.testing import CliRunner
+                runner = CliRunner()
+                result = runner.invoke(health)
+                click.echo(result.output)
+            
+            elif command.startswith('ask '):
+                parts = command.split(' ', 1)
+                if len(parts) > 1:
+                    filename = parts[1]
+                    question = input(f"❓ Question for {filename}: ")
+                    
+                    # Simple ask implementation
+                    payload = {'filename': filename, 'question': question}
+                    response = make_request('POST', '/ask', json=payload)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        click.echo(f"\n📝 Answer: {data.get('answer', 'No answer')}")
+                    else:
+                        click.echo("❌ Error processing question")
+                else:
+                    click.echo("❌ Please specify a filename: ask <filename>")
+            
+            elif command.startswith('viz '):
+                parts = command.split(' ', 1)
+                if len(parts) > 1:
+                    filename = parts[1]
+                    viz_type = input("📊 Visualization type (auto/bar/line/scatter/heatmap): ") or "auto"
+                    
+                    payload = {'filename': filename, 'type': viz_type}
+                    response = make_request('POST', '/visualize', json=payload)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        viz_data = data.get('visualization', {})
+                        visualizations = viz_data.get('visualizations', [])
+                        
+                        if visualizations:
+                            click.echo(f"✅ Generated {len(visualizations)} visualization(s)")
+                            for viz in visualizations:
+                                click.echo(f"   📈 {viz.get('title', 'Unknown')}")
+                        else:
+                            click.echo("📊 No visualizations generated")
+                    else:
+                        click.echo("❌ Error creating visualization")
+                else:
+                    click.echo("❌ Please specify a filename: viz <filename>")
+            
+            elif command.startswith('analyze '):
+                parts = command.split(' ', 1)
+                if len(parts) > 1:
+                    filename = parts[1]
+                    analysis_type = input("🔬 Analysis type (comprehensive/statistical/temporal): ") or "comprehensive"
+                    
+                    payload = {'filename': filename, 'analysis_type': analysis_type}
+                    response = make_request('POST', '/analyze', json=payload)
+                    
+                    if response.status_code == 200:
+                        click.echo("✅ Analysis completed successfully")
+                    else:
+                        click.echo("❌ Error performing analysis")
+                else:
+                    click.echo("❌ Please specify a filename: analyze <filename>")
+            
+            elif command.strip() == '':
+                continue
+            
+            else:
+                click.echo(f"❌ Unknown command: {command}")
+                click.echo("💡 Type 'help' for available commands")
+        
+        except KeyboardInterrupt:
+            click.echo("\n👋 Goodbye!")
+            break
+        except EOFError:
+            click.echo("\n👋 Goodbye!")
+            break
 
 if __name__ == '__main__':
     cli()
