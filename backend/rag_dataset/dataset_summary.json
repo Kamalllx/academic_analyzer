@@ -1,0 +1,31 @@
+{
+  "total_files": 15,
+  "files_by_category": {
+    "research_papers": 4,
+    "business_reports": 4,
+    "technical_docs": 4
+  },
+  "generated_files": [
+    "arxiv_2505.20245_v1.pdf",
+    "arxiv_2505.20246_v1.pdf",
+    "arxiv_2505.20243_v1.pdf",
+    "rag_dataset\\business_reports\\TechCorp_Solutions_annual_report_2024.pdf",
+    "rag_dataset\\business_reports\\DataViz_Analytics_annual_report_2024.pdf",
+    "rag_dataset\\business_reports\\AI_Innovations_Inc_annual_report_2024.pdf",
+    "rag_dataset\\business_reports\\Future_Systems_Ltd_annual_report_2024.pdf",
+    "rag_dataset\\technical_docs\\Smart_Analytics_Platform_technical_specs.pdf",
+    "rag_dataset\\technical_docs\\Data_Processing_Engine_technical_specs.pdf",
+    "rag_dataset\\technical_docs\\Visualization_Toolkit_technical_specs.pdf",
+    "rag_dataset\\technical_docs\\ML_Pipeline_System_technical_specs.pdf",
+    "rag_dataset\\research_papers\\research_Advanced_RAG_Systems_with_Mult.pdf",
+    "rag_dataset\\research_papers\\research_Data_Visualization_in_Informat.pdf",
+    "rag_dataset\\research_papers\\research_Agentic_Approaches_to_Document.pdf",
+    "rag_dataset\\research_papers\\research_Multimodal_Document_Understand.pdf"
+  ],
+  "generation_date": "2025-05-27T08:00:58.055399",
+  "packages_used": {
+    "fpdf2": true,
+    "data_visualization": true,
+    "arxiv": true
+  }
+}
